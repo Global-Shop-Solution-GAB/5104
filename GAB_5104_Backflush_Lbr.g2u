@@ -1,0 +1,246 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+	V.Global.sFileCSV.Declare
+	V.Global.sFileComplete.Declare
+	V.Global.sLogFile.Declare
+	V.Global.sMOPEN.Declare
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+	F.Intrinsic.Control.CallSub(CheckDirectories)
+	F.Intrinsic.Control.CallSub(LoadJobs)
+	F.Intrinsic.Control.CallSub(JB0455)
+	
+	F.Intrinsic.File.CopyFile(V.Global.sFileCSV,V.Global.sFileComplete)
+	F.Intrinsic.File.DeleteFile(V.Global.sFileCSV)
+'	F.Intrinsic.UI.Msgbox("Upload Complete.","Complete")
+Program.Sub.Main.End
+
+Program.Sub.CheckDirectories.Start
+	V.Local.sDir.Declare
+	V.Local.sDirCompl.Declare
+	V.Local.bDir.Declare
+	
+	F.Intrinsic.String.Build("{0}\Import",V.Caller.FilesDir,V.Local.sDir)
+	F.Intrinsic.File.DirExists(V.Local.sDir,V.Local.bDir)
+	F.Intrinsic.Control.If(V.Local.bDir,=,False)
+		F.Intrinsic.File.CreateDir(V.Local.sDir)
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.String.Build("{0}\Complete",V.Local.sDir,V.Local.sDirCompl)
+	F.Intrinsic.File.DirExists(V.Local.sDirCompl,V.Local.bDir)
+	F.Intrinsic.Control.If(V.Local.bDir,=,False)
+		F.Intrinsic.File.CreateDir(V.Local.sDirCompl)
+	F.Intrinsic.Control.EndIf
+	
+	'..\Global\FILES\Import
+	F.Intrinsic.String.Build("{0}\GAB_5104_Job_Detail_Upl_{1}_{2}_{3}_{4}.txt",V.Local.sDir,V.Caller.CompanyCode,V.Caller.Terminal,V.Ambient.Date.FormatMMDDYY,V.Ambient.Time.FormatHHMMNN,V.Global.sFileCSV)
+	'..\Global\FILES\Import\Complete
+	F.Intrinsic.String.Build("{0}\GAB_5104_Job_Detail_Upl_{1}_{2}_{3}_{4}.txt",V.Local.sDirCompl,V.Caller.CompanyCode,V.Caller.Terminal,V.Ambient.Date.FormatMMDDYY,V.Ambient.Time.FormatHHMMNN,V.Global.sFileComplete)
+	
+	'%temp%\gss
+	F.Intrinsic.String.Build("{0}\GAB_5104_Job_Detail_Log_{1}_{2}.txt",V.Caller.LocalGSSTempDir,V.Ambient.Date.FormatMMDDYY,V.Caller.Terminal,V.Global.sLogFile)
+	'..\Global\FILES
+	F.Intrinsic.String.Build("{0}\{1}{2}MOPEN.txt",V.Caller.FilesDir,V.Caller.CompanyCode,V.Caller.Terminal,V.Global.sMOPEN)
+Program.Sub.CheckDirectories.End
+
+Program.Sub.LoadJobs.Start
+	V.Local.sSQL.Declare
+	V.Local.iCnt.Declare
+	V.Local.iCnt2.Declare
+	V.Local.sJS.Declare
+	V.Local.sFilter.Declare
+	
+	F.ODBC.Connection!con.OpenCompanyConnection(300)
+	
+	'Get Distinct Jobs from Job Operations where Job-Suffix-Seq is flagged closed
+	F.Data.DataTable.CreateFromSQL("dtJobs","con","Select Distinct Job+Suffix As JS,Seq From V_Job_Operations Where LMO = 'L' And Flag_Closed = 'Y' And Seq < 996000 Or LMO = 'L' And Hours_Actual <> 0 And Seq < 996000 Order By Job, Suffix, Seq;",True)
+	F.Data.DataTable.AddColumn("dtJobs","Closed",Boolean,False)
+	'Check JOB_HEADER to see if the entire WO is still open
+	F.Data.Dictionary.CreateFromSQL("dClosed","con","Select Job+Suffix As JS,Cast(1 As Bit) As Closed From V_Job_Header Where Date_Closed <> '1900-01-01';")
+	F.Data.Dictionary.SetDefaultReturn("dClosed",False)
+	F.Data.DataTable.FillFromDictionary("dtJobs","dClosed","JS","Closed")
+	F.Data.Dictionary.Close("dClosed")
+	F.Data.DataView.Create("dtJobs","dvJobs",22,"Closed = False","")
+	F.Data.DataView.ToDataTable("dtJobs","dvJobs","dtOpenJobs",True)
+	F.Data.DataTable.Close("dtJobs")
+	'Build job list of open works with closed labor steps
+	F.Intrinsic.Control.For(V.Local.iCnt,0,V.DataTable.dtOpenJobs.RowCount--,1)
+		F.Intrinsic.Control.If(V.Local.iCnt,=,0)
+			F.Intrinsic.String.Build("'{0}'",V.DataTable.dtOpenJobs(V.Local.iCnt).JS!FieldVal,V.Local.sJS)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.String.Build("{0},'{1}'",V.Local.sJS,V.DataTable.dtOpenJobs(V.Local.iCnt).JS!FieldVal,V.Local.sJS)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.iCnt)
+	F.Data.DataTable.Close("dtOpenJobs")
+	
+	'Get Distinct Jobs from Job Operations where the Seq is not Closed and has no detail against it
+	'F.Intrinsic.String.Build("Select Job As Job,Suffix As Suffix,Seq As Seq,Replace(Cast(CurDate() As Char(10)),'-','') As Date_Seq,' ' As Dept,Burden As Rate,' ' As Empl,RTrim(Part) As WC,Hours_Estimated As Hrs_Worked,'Y' As Closed,'D' As Indirect,'L' As RateType,Units_Open As GoodPcs From Job_Operations Where Job+Suffix In ({0}) And Flag_Closed <> 'Y' And Date_Completed = '000000' And Lmo = 'L' And Units_Complete = 0 And Hours_Actual < Hours_Estimated And Seq < 996000 Order By Job, Suffix, Seq;",V.Local.sJS,V.Local.sSQL)
+	F.Intrinsic.String.Build("Select Job As Job,Suffix As Suffix,Seq As Seq,Replace(Cast(CurDate() As Char(10)),'-','') As Date_Seq,' ' As Dept,Burden As Rate,' ' As Empl,RTrim(Part) As WC,Hours_Estimated As Hrs_Worked,'Y' As Closed,'D' As Indirect,'L' As RateType,Units_Open As GoodPcs From Job_Operations Where Job+Suffix In ({0}) And Flag_Closed <> 'Y' And Date_Completed = '000000' And Lmo = 'L' And Hours_Actual < Hours_Estimated And Seq < 996000 Order By Job, Suffix, Seq;",V.Local.sJS,V.Local.sSQL)
+	F.Data.DataTable.CreateFromSQL("dtJobOps","con",V.Local.sSQL,True)
+	F.Data.DataTable.AddColumn("dtJobOps","Flush",Boolean,False)
+	'Flag seqs that are flagged for WC Backflushing
+	F.Data.Dictionary.CreateFromSQL("dFlush","con","Select Workcenter,Cast(1 As Bit) As Flush From GAB_5104_WC_EMPL;")
+	F.Data.Dictionary.SetDefaultReturn("dFlush",False)
+	F.Data.DataTable.FillFromDictionary("dtJobOps","dFlush","WC","Flush")
+	F.Data.Dictionary.Close("dFlush")
+	'Set associated employee to the record
+	F.Data.Dictionary.CreateFromSQL("dEmpl","con","Select Workcenter,Employee From GAB_5104_WC_EMPL;")
+	F.Data.Dictionary.SetDefaultReturn("dEmpl","")
+	F.Data.DataTable.FillFromDictionary("dtJobOps","dEmpl","WC","Empl")
+	F.Data.Dictionary.Close("dEmpl")
+	'Create a Dataview/DataTable of the Job-Suffix_Seq that needs to be backflushed
+	F.Data.DataView.Create("dtJobOps","dvJobOps",22,"Flush = True","")
+	F.Data.DataView.ToDataTable("dtJobOps","dvJobOps","dtCheckSeq",True)
+	F.Data.DataTable.Close("dtJobOps")
+	'Cerate CSV datatable from view above
+	F.Data.DataView.Create("dtCheckSeq","dvCheckSeq",22,"Flush = True","")
+	F.Data.DataView.ToDataTable("dtCheckSeq","dvCheckSeq","dtCSV",True)
+	F.Data.DataTable.Close("dtCheckSeq")
+	F.Data.DataTable.RemoveColumn("dtCSV","Flush")
+	'Create CSV from Datatable
+	F.Intrinsic.Control.If(V.DataTable.dtCSV.RowCount,=,0)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.Else
+		F.Data.DataTable.SaveToCSV("dtCSV",V.Global.sFileCSV,True)
+		F.Data.DataTable.Close("dtCSV")
+	F.Intrinsic.Control.EndIf
+	
+	F.ODBC.Connection!con.Close
+Program.Sub.LoadJobs.End
+
+Program.Sub.JB0455.Start
+	V.Local.sData.Declare
+	V.Local.sLines.Declare
+	V.Local.iLine.Declare
+	V.Local.iC.Declare
+	V.Local.sA.Declare
+	V.Local.sD.Declare
+	V.Local.sSQL.Declare
+	V.Local.sRet.Declare
+	V.Local.sLogString.Declare
+	V.Local.sMsgLog.Declare
+	V.Local.sString.Declare
+	V.Local.sFile.Declare
+	V.Local.dDate.Declare
+	
+	V.Local.sJob.Declare
+	V.Local.sSuffix.Declare
+	V.Local.sSeq.Declare
+	V.Local.sDateSeq.Declare
+	V.Local.sDept.Declare
+	V.Local.sWcRate.Declare
+	V.Local.sEmpl.Declare
+	V.Local.sWC.Declare
+	V.Local.sHrsWorked.Declare
+	V.Local.sFlagClsd.Declare
+	V.Local.sFlagIndirect.Declare
+	V.Local.sRateType.Declare
+	V.Local.sGoodPieces.Declare
+	V.Local.sEmpName.Declare
+	
+	F.Intrinsic.File.File2String(V.Global.sFileCSV,V.Local.sData)
+	F.Intrinsic.String.Split(V.Local.sData,V.ASCII.10,V.Local.sLines)
+	V.Local.iLine.Set(V.Local.sLines.UBound)
+	F.Intrinsic.Math.Sub(V.Local.iLine,1,V.Local.iLine)
+	
+	F.ODBC.Connection!con.OpenCompanyConnection(300)
+	F.Intrinsic.Control.For(V.Local.iC,1,V.Local.iLine,1)
+		V.Local.sA.Set(V.Local.sLines(V.Local.iC))
+		F.Intrinsic.String.SplitCSV(V.Local.sA,V.Local.sD)
+		'Job
+		V.Local.sJob.Set(V.Local.sD(0))
+		'Suffix
+		V.Local.sSuffix.Set(V.Local.sD(1))
+		
+		'Validate that the job and suffix are in the job_master table
+		F.Intrinsic.String.Build("SELECT * FROM JOB_HEADER WHERE JOB = '{0}' AND SUFFIX = '{1}';",V.Local.sJob,V.Local.sSuffix,V.Local.sSQL)
+		F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL,V.Local.sRet)
+		F.Intrinsic.Control.If(V.Local.sRet,=,"")
+			'Write Data to Log File
+			F.Intrinsic.Control.If(V.Local.sLogString,=,"")
+				F.Intrinsic.String.Build("{0}-{1}{2}-Job Not Found",V.Local.sJob,V.Local.sSuffix,V.Ambient.Tab,V.Local.sLogString)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.Build("{0}{1}{2}-{3}{4}-Job Not Found",V.Local.sLogString,V.Ambient.NewLine,V.Local.sJob,V.Local.sSuffix,V.Ambient.Tab,V.Local.sLogString)
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.EndIf
+	
+		'Seq
+		V.Local.sSeq.Set(V.Local.sD(2))
+		'Date Seq
+		F.Intrinsic.Control.If(V.Local.sD(3),=,"OOB")
+			V.Local.dDate.Set(V.Ambient.Date)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.Date.ConvertDString(V.Local.sD(3),"YYYYMMDD",V.Local.dDate)
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.String.Format(V.Local.dDate,"MMDDYY",V.Local.sDateSeq)
+		'Dept
+		V.Local.sDept.Set(V.Local.sD(4))
+		'Wc Rate
+		V.Local.sWcRate.Set(V.Local.sD(5))
+		'Empl
+		V.Local.sEmpl.Set(V.Local.sD(6))
+	
+		'Validate the employee and that the employee has a rate
+		F.Intrinsic.String.Build("SELECT EMPLOYEE,NAME,RATE,DEPT_EMPLOYEE FROM EMPLOYEE_MSTR WHERE EMPLOYEE = '{0}';",V.Local.sEmpl,V.Local.sSQL)
+		F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL,V.Local.sRet)
+		F.Intrinsic.String.Split(V.Local.sRet,"*!*",V.Local.sRet)
+		F.Intrinsic.Control.If(V.Local.sRet(0),=,"")
+			'Write Data to Log File
+			F.Intrinsic.Control.If(V.Local.sLogString,=,"")
+				F.Intrinsic.String.Build("{0}{1}-Employee Not Found",V.Local.sEmpl,V.Ambient.Tab,V.Local.sLogString)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.Build("{0}{1}{2}{3}-Employee Not Found",V.Local.sLogString,V.Ambient.NewLine,V.Local.sEmpl,V.Ambient.Tab,V.Local.sLogString)
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.ElseIf(V.Local.sRet(2),=,"")
+			'Write Data to Log File
+			F.Intrinsic.Control.If(V.Local.sLogString,=,"")
+				F.Intrinsic.String.Build("{0}{1}-Employee Rate Not Found",V.Local.sEmpl,V.Ambient.Tab,V.Local.sLogString)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.Build("{0}{1}{2}{3}-Employee Rate Not Found",V.Local.sLogString,V.Ambient.NewLine,V.Local.sEmpl,V.Ambient.Tab,V.Local.sLogString)
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.Else
+			V.Local.sEmpName.Set(V.Local.sRet(1))
+			V.Local.sWcRate.Set(V.Local.sRet(2))
+			V.Local.sDept.Set(V.Local.sRet(3))
+		F.Intrinsic.Control.EndIf
+	
+		'WC
+		V.Local.sWC.Set(V.Local.sD(7))
+		'Hrs Worked
+		V.Local.sHrsWorked.Set(V.Local.sD(8))
+		'Flag Clsd
+		V.Local.sFlagClsd.Set(V.Local.sD(9))
+		'Flag Indirect
+		V.Local.sFlagIndirect.Set(V.Local.sD(10))
+		'Rate Type
+		V.Local.sRateType.Set(V.Local.sD(11))
+		'Good  Pieces
+		V.Local.sGoodPieces.Set(V.Local.sD(12))
+		F.Intrinsic.String.Replace(V.Local.sGoodPieces,V.ASCII.13,"",V.Local.sGoodPieces)
+	
+		'Create Tab delimited file for upload
+		'F.Intrinsic.String.Build("{16}{1}{0}{2}{0}{3}{0}{4}{0}{5}{0}{6}{0}{7}{0}{8}{0}{9}{0}{10}{0}{11}{0}{12}{0}{13}{0}{14}{0}{15}{17}",V.Ambient.Tab,V.Local.sDateSeq,V.Local.sEmpl,V.Local.sJob,V.Local.sSuffix.Trim,V.Local.sSeq,V.Local.sWC,V.Local.sHrsWorked,V.Local.sFlagClsd,V.Local.sFlagIndirect,"","",V.Local.sRateType,V.Local.sGoodPieces,"0","0",V.Local.sString,V.Ambient.NewLine,V.Local.sString)
+		F.Intrinsic.String.Build("{16}{1}{0}{2}{0}{3}{0}{4}{0}{5}{0}{6}{0}{7}{0}{8}{0}{9}{0}{10}{0}{11}{0}{12}{0}{13}{0}{14}{0}{15}{17}",V.Ambient.Tab,V.Local.sDateSeq,V.Local.sEmpl,V.Local.sJob,V.Local.sSuffix.Trim,V.Local.sSeq,V.Local.sWC,V.Local.sHrsWorked,V.Local.sFlagClsd,V.Local.sFlagIndirect,"","",V.Local.sRateType,"0","0","0",V.Local.sString,V.Ambient.NewLine,V.Local.sString)
+	F.Intrinsic.Control.Next(V.Local.iC)
+	
+	'Save Tab Delimited File
+	F.Intrinsic.File.String2File(V.Global.sMOPEN,V.Local.sString)
+	
+	F.Intrinsic.Control.If(V.Local.sLogString,<>,"")
+		F.Intrinsic.File.String2File(V.Global.sLogFile,V.Local.sLogString)
+'		F.Intrinsic.String.Build("Please review your data and retry the upload.{0}(LogFile: {1})",V.Ambient.NewLine,V.Global.sLogFile,V.Local.sMsgLog)
+'		F.Intrinsic.UI.Msgbox(V.Local.sMsgLog,"Job Detail Error:")
+'		F.Intrinsic.Task.ShellExec(V.Caller.Handle,"Open",V.Global.sLogFile,"","",1)
+		F.ODBC.Connection!con.Close
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndIf
+	
+	'Upload records from tab delimited file into JOBS_IN_PROCESS - Online Update must be running in order for these records to get posted to JOB_DETAIL
+	F.Intrinsic.String.Build("{0}{1}MOPEN.txt",V.Caller.CompanyCode,V.Caller.Terminal,V.Local.sFile)
+	F.Intrinsic.Task.LaunchGSSSync("JB0455","-C",V.Local.sFile)
+
+	F.ODBC.Connection!con.Close
+Program.Sub.JB0455.End
